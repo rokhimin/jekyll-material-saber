@@ -2,7 +2,7 @@
 
 # Material Saber
 ## About
-Material saber theme jekyll inspired material theme.
+Material saber jekyll inspired material theme.
 
 ###### Live
 - host github : ...
