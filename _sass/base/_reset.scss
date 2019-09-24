@@ -114,8 +114,10 @@ hr {
 
 /* Code Blocks */
 
-pre { overflow: auto; }
+pre {
+overflow: auto;
+}
 
 code, pre {
-
+    background: #222222;
 }

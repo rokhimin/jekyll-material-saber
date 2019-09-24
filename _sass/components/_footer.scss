@@ -8,10 +8,11 @@
   padding-right: 2.5rem;
   width: 100%;
   height: 300px;
-  background: $c__light-grey;
+  background: #292929;
 
   p {
     @include fs--meta;
+    color: rgba($c__white, .7);
   }
 
   a:not(:first-of-type) {
