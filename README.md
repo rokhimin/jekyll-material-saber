@@ -5,9 +5,8 @@
 Material saber jekyll inspired material theme.
 
 ###### Live
-- host github : ...
 - host heroku : ...
-- host netlify : ...
+- host netlify : https://material-saber.netlify.com
 ## Deploy
 
 ###### Heroku
