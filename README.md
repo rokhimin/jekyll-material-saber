@@ -1,5 +1,7 @@
 <center><img src="https://github.com/rokhimin/jekyll-material-saber/blob/master/bg/material-saber.jpg" ></img></center>
 
+![Build Status](https://travis-ci.com/rokhimin//jekyll-darkness.svg?branch=master)
+![Coverage Status](https://img.shields.io/badge/coverage-99%25-brightgreen)
 # Material Saber
 ## About
 Material saber jekyll inspired material theme.
