@@ -305,3 +305,343 @@ namespace :check do
     MarkupChecker.new.check
   end
 end
+
+Ransack::Adapters.object_mapper.require_constants
+
+module Ransack
+  extend Configuration
+  class UntraversableAssociationError < StandardError; end;
+end
+
+Ransack.configure do |config|
+  Ransack::Constants::AREL_PREDICATES.each do |name|
+    config.add_predicate name, :arel_predicate => name
+  end
+  Ransack::Constants::DERIVED_PREDICATES.each do |args|
+    config.add_predicate(*args)
+  end
+end
+
+require 'ransack/search'
+require 'ransack/ransacker'
+require 'ransack/helpers'
+require 'action_controller'
+require 'ransack/translate'
+
+Ransack::Adapters.object_mapper.require_adapter
+
+ActiveSupport.on_load(:action_controller) do
+  ActionController::Base.helper Ransack::Helpers::FormHelper
+end
+
+module Ransack
+  module Adapters
+
+    def self.object_mapper
+      @object_mapper ||= instantiate_object_mapper
+    end
+
+    def self.instantiate_object_mapper
+      if defined?(::ActiveRecord::Base)
+        ActiveRecordAdapter.new
+      elsif defined?(::Mongoid)
+        MongoidAdapter.new
+      else
+        raise "Unsupported adapter"
+      end
+    end
+
+    class ActiveRecordAdapter
+      def require_constants
+        require 'ransack/adapters/active_record/ransack/constants'
+      end
+
+      def require_adapter
+        require 'ransack/adapters/active_record/ransack/translate'
+        require 'ransack/adapters/active_record'
+      end
+
+      def require_context
+        require 'ransack/adapters/active_record/ransack/visitor'
+      end
+
+      def require_nodes
+        require 'ransack/adapters/active_record/ransack/nodes/condition'
+      end
+
+      def require_search
+        require 'ransack/adapters/active_record/ransack/context'
+      end
+    end
+
+    class MongoidAdapter
+      def require_constants
+        require 'ransack/adapters/mongoid/ransack/constants'
+      end
+
+      def require_adapter
+        require 'ransack/adapters/mongoid/ransack/translate'
+        require 'ransack/adapters/mongoid'
+      end
+
+      def require_context
+        require 'ransack/adapters/mongoid/ransack/visitor'
+      end
+
+      def require_nodes
+        require 'ransack/adapters/mongoid/ransack/nodes/condition'
+      end
+
+      def require_search
+        require 'ransack/adapters/mongoid/ransack/context'
+      end
+    end
+  end
+end
+
+
+module Ransack
+  module Configuration
+
+    mattr_accessor :predicates, :options
+
+    class PredicateCollection
+      attr_reader :sorted_names_with_underscores
+
+      def initialize
+        @collection = {}
+        @sorted_names_with_underscores = []
+      end
+
+      delegate :[], :keys, :has_key?, to: :@collection
+
+      def []=(key, value)
+        @sorted_names_with_underscores << [key, '_' + key]
+        @sorted_names_with_underscores.sort! { |(a, _), (b, _)| b.length <=> a.length }
+
+        @collection[key] = value
+      end
+    end
+
+    self.predicates = PredicateCollection.new
+
+    self.options = {
+      :search_key => :q,
+      :ignore_unknown_conditions => true,
+      :hide_sort_order_indicators => false,
+      :up_arrow => '&#9660;'.freeze,
+      :down_arrow => '&#9650;'.freeze,
+      :default_arrow => nil,
+      :sanitize_scope_args => true
+    }
+
+    def configure
+      yield self
+    end
+
+    def add_predicate(name, opts = {})
+      name = name.to_s
+      opts[:name] = name
+      compounds = opts.delete(:compounds)
+      compounds = true if compounds.nil?
+      compounds = false if opts[:wants_array]
+
+      self.predicates[name] = Predicate.new(opts)
+
+      Constants::SUFFIXES.each do |suffix|
+        compound_name = name + suffix
+        self.predicates[compound_name] = Predicate.new(
+          opts.merge(
+            :name => compound_name,
+            :arel_predicate => arel_predicate_with_suffix(
+              opts[:arel_predicate], suffix
+              ),
+            :compound => true
+          )
+        )
+      end if compounds
+    end
+
+    # The default `search_key` name is `:q`. The default key may be overridden
+    # in an initializer file like `config/initializers/ransack.rb` as follows:
+    #
+    # Ransack.configure do |config|
+    #   # Name the search_key `:query` instead of the default `:q`
+    #   config.search_key = :query
+    # end
+    #
+    # Sometimes there are situations when the default search parameter name
+    # cannot be used, for instance if there were two searches on one page.
+    # Another name can be set using the `search_key` option with Ransack
+    # `ransack`, `search` and `@search_form_for` methods in controllers & views.
+    #
+    # In the controller:
+    # @search = Log.ransack(params[:log_search], search_key: :log_search)
+    #
+    # In the view:
+    # <%= f.search_form_for @search, as: :log_search %>
+    #
+    def search_key=(name)
+      self.options[:search_key] = name
+    end
+
+    # By default Ransack ignores errors if an unknown predicate, condition or
+    # attribute is passed into a search. The default may be overridden in an
+    # initializer file like `config/initializers/ransack.rb` as follows:
+    #
+    # Ransack.configure do |config|
+    #   # Raise if an unknown predicate, condition or attribute is passed
+    #   config.ignore_unknown_conditions = false
+    # end
+    #
+    def ignore_unknown_conditions=(boolean)
+      self.options[:ignore_unknown_conditions] = boolean
+    end
+
+    # By default, Ransack displays sort order indicator arrows with HTML codes:
+    #
+    #   up_arrow:   '&#9660;'
+    #   down_arrow: '&#9650;'
+    #
+    # There is also a default arrow which is displayed if a column is not sorted.
+    # By default this is nil so nothing will be displayed.
+    #
+    # Any of the defaults may be globally overridden in an initializer file
+    # like `config/initializers/ransack.rb` as follows:
+    #
+    # Ransack.configure do |config|
+    #   # Globally set the up arrow to an icon, and the down and default arrows to unicode.
+    #   config.custom_arrows = {
+    #     up_arrow:   '<i class="fa fa-long-arrow-up"></i>',
+    #     down_arrow: 'U+02193',
+    #     default_arrow: 'U+11047'
+    #   }
+    # end
+    #
+    def custom_arrows=(opts = {})
+      self.options[:up_arrow] = opts[:up_arrow].freeze if opts[:up_arrow]
+      self.options[:down_arrow] = opts[:down_arrow].freeze if opts[:down_arrow]
+      self.options[:default_arrow] = opts[:default_arrow].freeze if opts[:default_arrow]
+    end
+
+    # Ransack sanitizes many values in your custom scopes into booleans.
+    # [1, '1', 't', 'T', 'true', 'TRUE'] all evaluate to true.
+    # [0, '0', 'f', 'F', 'false', 'FALSE'] all evaluate to false.
+    #
+    # This default may be globally overridden in an initializer file like
+    # `config/initializers/ransack.rb` as follows:
+    #
+    # Ransack.configure do |config|
+    #   # Accept my custom scope values as what they are.
+    #   config.sanitize_custom_scope_booleans = false
+    # end
+    #
+    def sanitize_custom_scope_booleans=(boolean)
+      self.options[:sanitize_scope_args] = boolean
+    end
+
+    # By default, Ransack displays sort order indicator arrows in sort links.
+    # The default may be globally overridden in an initializer file like
+    # `config/initializers/ransack.rb` as follows:
+    #
+    # Ransack.configure do |config|
+    #   # Hide sort link order indicators globally across the application
+    #   config.hide_sort_order_indicators = true
+    # end
+    #
+    def hide_sort_order_indicators=(boolean)
+      self.options[:hide_sort_order_indicators] = boolean
+    end
+
+    def arel_predicate_with_suffix(arel_predicate, suffix)
+      if arel_predicate === Proc
+        proc { |v| "#{arel_predicate.call(v)}#{suffix}" }
+      else
+        "#{arel_predicate}#{suffix}"
+      end
+    end
+
+  end
+end
+  
+  module Ransack
+  module Constants
+    OR                  = 'or'.freeze
+    AND                 = 'and'.freeze
+
+    CAP_SEARCH          = 'Search'.freeze
+    SEARCH              = 'search'.freeze
+    SEARCHES            = 'searches'.freeze
+
+    ATTRIBUTE           = 'attribute'.freeze
+    ATTRIBUTES          = 'attributes'.freeze
+    COMBINATOR          = 'combinator'.freeze
+
+    TWO_COLONS          = '::'.freeze
+    UNDERSCORE          = '_'.freeze
+    LEFT_PARENTHESIS    = '('.freeze
+    Q                   = 'q'.freeze
+    I                   = 'i'.freeze
+    DOT_ASTERIX         = '.*'.freeze
+
+    STRING_JOIN         = 'string_join'.freeze
+    ASSOCIATION_JOIN    = 'association_join'.freeze
+    STASHED_JOIN        = 'stashed_join'.freeze
+    JOIN_NODE           = 'join_node'.freeze
+
+    TRUE_VALUES = [true, 1, '1', 't', 'T', 'true', 'TRUE'].to_set
+    FALSE_VALUES = [false, 0, '0', 'f', 'F', 'false', 'FALSE'].to_set
+    BOOLEAN_VALUES = (TRUE_VALUES + FALSE_VALUES).freeze
+
+    AND_OR              = ['and'.freeze, 'or'.freeze].freeze
+    IN_NOT_IN           = ['in'.freeze, 'not_in'.freeze].freeze
+    SUFFIXES            = ['_any'.freeze, '_all'.freeze].freeze
+    AREL_PREDICATES     = [
+      'eq'.freeze, 'not_eq'.freeze,
+      'matches'.freeze, 'does_not_match'.freeze,
+      'lt'.freeze, 'lteq'.freeze,
+      'gt'.freeze, 'gteq'.freeze,
+      'in'.freeze, 'not_in'.freeze
+      ].freeze
+    A_S_I               = ['a'.freeze, 's'.freeze, 'i'.freeze].freeze
+
+    EQ                  = 'eq'.freeze
+    NOT_EQ              = 'not_eq'.freeze
+    EQ_ANY              = 'eq_any'.freeze
+    NOT_EQ_ALL          = 'not_eq_all'.freeze
+    CONT                = 'cont'.freeze
+
+    RAILS_5_1           = '5.1'.freeze
+    RAILS_5_2           = '5.2'.freeze
+    RAILS_5_2_0         = '5.2.0'.freeze
+    RAILS_6_0           = '6.0.0'.freeze
+
+    RANSACK_SLASH_SEARCHES = 'ransack/searches'.freeze
+    RANSACK_SLASH_SEARCHES_SLASH_SEARCH = 'ransack/searches/search'.freeze
+  end
+end
+  
+  module Ransack
+  class Ransacker
+
+    attr_reader :name, :type, :formatter, :args
+
+    delegate :call, :to => :@callable
+
+    def initialize(klass, name, opts = {}, &block)
+      @klass, @name = klass, name
+
+      @type = opts[:type] || :string
+      @args = opts[:args] || [:parent]
+      @formatter = opts[:formatter]
+      @callable = opts[:callable] || block ||
+                  (@klass.method(name) if @klass.respond_to?(name)) ||
+                  proc { |parent| parent.table[name] }
+    end
+
+    def attr_from(bindable)
+      call(*args.map { |arg| bindable.send(arg) })
+    end
+
+  end
+end
