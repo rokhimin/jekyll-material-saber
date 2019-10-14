@@ -1,0 +1,11 @@
+language: ruby
+rvm:
+ - 2.6.3
+
+branches:
+  only:
+  - master
+
+matrix:
+  fast_finish: true
+© 2019 GitHub, Inc.
